@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 # 导入 Modbus SDK（src 目录已在项目根目录，无需额外添加路径）
 from src.sr_modbus_sdk import SRModbusSdk
+from src.sr_modbus_model import MovementState
+import time
 
 class ModbusAICmd:
     def __init__(self):
@@ -66,10 +68,39 @@ class ModbusAICmd:
         """
         logger.info(f"开始移动到站点 {station_no}，超时时间: {timeout}秒")
         try:
+            # 检查是否有正在运行的任务
+            movement_task = self.mb_server.get_movement_task_info()
+            if movement_task.state == MovementState.MT_RUNNING:
+                logger.warning(f"⚠️ 检测到正在运行的任务（编号: {movement_task.no}），先取消旧任务")
+                try:
+                    self.mb_server.cancel_task()
+                    # 等待任务取消完成（最多等待5秒）
+                    for i in range(5):
+                        time.sleep(1)
+                        task_info = self.mb_server.get_movement_task_info()
+                        if task_info.state != MovementState.MT_RUNNING:
+                            logger.info(f"✅ 旧任务已取消，状态: {task_info.state}")
+                            break
+                except Exception as e:
+                    logger.warning(f"⚠️ 取消旧任务失败: {e}，继续发送新任务")
+            
             self.increment_no += 1
-            logger.debug(f"更新increment_no: {self.increment_no}")
-            self.mb_server.move_to_station_no(station_no, self.increment_no)
-            self.mb_server.wait_movement_task_finish(self.increment_no, timeout=timeout)
+            task_no = self.increment_no
+            logger.info(f"📤 发送移动任务 - 站点: {station_no}, 任务编号: {task_no}")
+            self.mb_server.move_to_station_no(station_no, task_no)
+            
+            # 等待任务编号更新（最多等待3秒）
+            logger.debug("⏳ 等待机器人接收任务...")
+            for i in range(3):
+                time.sleep(0.5)
+                task_info = self.mb_server.get_movement_task_info()
+                if task_info.no == task_no:
+                    logger.info(f"✅ 机器人已接收任务，任务编号: {task_no}")
+                    break
+                elif i == 2:
+                    logger.warning(f"⚠️ 任务编号未更新，期望: {task_no}, 实际: {task_info.no}，继续等待")
+            
+            self.mb_server.wait_movement_task_finish(task_no, timeout=timeout)
             logger.info("移动任务执行完成")
             return "执行成功"
         except TimeoutError as e:
