@@ -4,10 +4,23 @@ Gemini Agent 配置文件
 """
 
 import os
+from pathlib import Path
+
+# 加载 .env 文件（如果存在）
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    # 如果没有安装 python-dotenv，直接使用系统环境变量
+    pass
 
 # ============ Gemini API 配置 ============
-# 从环境变量读取，如果没有则使用默认值
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyB72lYFYap_YMphwlLIi9etJS2XQmGfYwU')
+# 从环境变量读取API密钥（必须设置）
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+if not GEMINI_API_KEY:
+    raise ValueError("请设置环境变量 GEMINI_API_KEY 或在 .env 文件中配置")
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
 
 # ============ Modbus 配置 ============
