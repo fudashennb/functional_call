@@ -359,6 +359,11 @@ class SRModbusSdk:
         :return:
         """
         ret = self._client.read_input_registers(address, count=register_num, slave=17)
+        # 检查是否为异常响应
+        if hasattr(ret, 'isError') and ret.isError():
+            raise ConnectionError(f"Modbus读取失败: 地址{address}, 数量{register_num}, 错误: {ret}")
+        if not hasattr(ret, 'registers'):
+            raise ConnectionError(f"Modbus读取失败: 未返回有效数据, 响应类型: {type(ret).__name__}")
         decoder = BinaryPayloadDecoder.fromRegisters(ret.registers, byteorder=Endian.Big,
                                                      wordorder=Endian.Big)
         return decoder
@@ -371,6 +376,11 @@ class SRModbusSdk:
         :return:
         """
         ret = self._client.read_holding_registers(address, count=register_num, slave=17)
+        # 检查是否为异常响应
+        if hasattr(ret, 'isError') and ret.isError():
+            raise ConnectionError(f"Modbus读取失败: 地址{address}, 数量{register_num}, 错误: {ret}")
+        if not hasattr(ret, 'registers'):
+            raise ConnectionError(f"Modbus读取失败: 未返回有效数据, 响应类型: {type(ret).__name__}")
         decoder = BinaryPayloadDecoder.fromRegisters(ret.registers, byteorder=Endian.Big,
                                                      wordorder=Endian.Big)
         return decoder
