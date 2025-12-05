@@ -10,7 +10,11 @@ from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadDecoder, BinaryPayloadBuilder
 import time
 import binascii
+import logging
 from .sr_modbus_model import *
+
+# 创建logger
+logger = logging.getLogger(__name__)
 
 
 class SRModbusSdk:
@@ -27,9 +31,9 @@ class SRModbusSdk:
         self._client = ModbusTcpClient(host=ip, port=port)
         ret = self._client.connect()
         if ret:
-            print("Connect success")
+            logger.info(f"✅ Modbus TCP连接成功: {ip}:{port}")
         else:
-            print("Connect fail")
+            logger.error(f"❌ Modbus TCP连接失败: {ip}:{port}")
             return
 
     def connect_rtu(self, port, baudrate=115200, parity="N"):
@@ -44,9 +48,9 @@ class SRModbusSdk:
                                           parity=parity, baudrate=baudrate)
         ret = self._client.connect()
         if ret:
-            print("Connect success")
+            logger.info(f"✅ Modbus RTU连接成功: {port}, 波特率: {baudrate}")
         else:
-            print("Connect fail")
+            logger.error(f"❌ Modbus RTU连接失败: {port}, 波特率: {baudrate}")
             return
 
     def wait_movement_task_finish(self, no=0):
@@ -59,10 +63,11 @@ class SRModbusSdk:
             decoder = self.read_registers_function(30113, 3)
             cur_move_state = MovementState(decoder.decode_16bit_uint())
             cur_move_no = decoder.decode_32bit_int()
-            print("Wait move finish %d s, cur move state is" % i, cur_move_state, "Cur move no is", cur_move_no)
+            logger.info(f"⏳ 等待移动任务完成 {i}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
             time.sleep(1)
             if cur_move_state == MovementState.MT_FINISHED and cur_move_no == no:
                 decoder = self.read_registers_function(30122, 3)
+                logger.info(f"✅ 移动任务完成 - 任务编号: {no}")
                 return [MovementResult(decoder.decode_16bit_uint()), decoder.decode_32bit_int()]
 
     def wait_action_task_finish(self, no=0):
@@ -75,13 +80,13 @@ class SRModbusSdk:
             decoder = self.read_registers_function(30129, 3)
             cur_action_state = ActionState(decoder.decode_16bit_uint())
             cur_action_no = decoder.decode_32bit_int()
-            print("Wait action finish %d s, Cur action state is" % i, cur_action_state, "Cur action no is",
-                  cur_action_no)
+            logger.info(f"⏳ 等待动作任务完成 {i}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
             time.sleep(1)
             if cur_action_state == ActionState.AT_FINISHED:
                 if no != 0 and cur_action_no != no:
                     continue
                 decoder = self.read_registers_function(30138, 3)
+                logger.info(f"✅ 动作任务完成 - 任务编号: {no if no != 0 else cur_action_no}")
                 return [ActionResult(decoder.decode_16bit_uint()), decoder.decode_32bit_int()]
 
     def wait_locate_task_finish(self):
@@ -91,12 +96,12 @@ class SRModbusSdk:
         """
         for i in range(99):
             time.sleep(1)
-            print('Wait locate finish', i, 's')
+            logger.info(f"⏳ 等待定位完成 {i}s")
             if self.get_cur_locate_state() == LocationState.LOCATION_STATE_RUNNING:
-                print('Locate finish')
+                logger.info("✅ 定位完成")
                 return LocationState.LOCATION_STATE_RUNNING
             elif self.get_cur_locate_state() == LocationState.LOCATION_STATE_ERROR:
-                print('Locate error')
+                logger.error("❌ 定位错误")
                 return LocationState.LOCATION_STATE_ERROR
 
     def write_coils_function(self, address, value=True):
