@@ -9,11 +9,23 @@ from pathlib import Path
 # 加载 .env 文件（如果存在）
 try:
     from dotenv import load_dotenv
+    # 尝试多个可能的.env文件路径
     env_path = Path(__file__).parent.parent / '.env'
+    if not env_path.exists():
+        # 如果上级目录找不到，尝试当前工作目录
+        env_path = Path.cwd() / '.env'
+    if not env_path.exists():
+        # 尝试项目根目录
+        env_path = Path(__file__).parent.parent.parent / '.env'
+    
     if env_path.exists():
         load_dotenv(env_path)
+        print(f"✅ 已加载环境变量文件: {env_path}")
+    else:
+        print(f"⚠️ 未找到.env文件，尝试路径: {env_path}")
 except ImportError:
     # 如果没有安装 python-dotenv，直接使用系统环境变量
+    print("⚠️ 未安装python-dotenv，将使用系统环境变量")
     pass
 
 # ============ Gemini API 配置 ============
