@@ -63,8 +63,22 @@ ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218
 
 ## 使用方法
 
-启动服务器：
+### 方式1：使用启动脚本（推荐）
 
+启动脚本会自动检查并建立SSH隧道：
+
+```bash
+./start_server.sh
+```
+
+### 方式2：手动启动
+
+1. 建立SSH隧道（如果尚未建立）：
+```bash
+ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218
+```
+
+2. 启动服务器：
 ```bash
 conda activate text_to_speech
 python3 agent/gemini_server.py
