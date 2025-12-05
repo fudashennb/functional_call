@@ -57,16 +57,29 @@ class ModbusAICmd:
         logger.info(f"✅ 初始化完成，任务编号起始值: {self.increment_no}")
         self.is_working = True
 
-    def mv_to_station(self, station_no: int):
-        """移动到指定站点"""
-        logger.info(f"开始移动到站点 {station_no}")
+    def mv_to_station(self, station_no: int, timeout: int = 120):
+        """移动到指定站点
+        
+        Args:
+            station_no: 站点编号，从1开始
+            timeout: 超时时间（秒），默认120秒
+        """
+        logger.info(f"开始移动到站点 {station_no}，超时时间: {timeout}秒")
         try:
             self.increment_no += 1
             logger.debug(f"更新increment_no: {self.increment_no}")
             self.mb_server.move_to_station_no(station_no, self.increment_no)
-            self.mb_server.wait_movement_task_finish(self.increment_no)
+            self.mb_server.wait_movement_task_finish(self.increment_no, timeout=timeout)
             logger.info("移动任务执行完成")
             return "执行成功"
+        except TimeoutError as e:
+            error_msg = f"移动任务超时: 站点{station_no}，已等待{timeout}秒。可能原因：机器人遇到障碍、路径阻塞或硬件故障。"
+            logger.error(f"❌ {error_msg}")
+            raise TimeoutError(error_msg)
+        except RuntimeError as e:
+            error_msg = f"移动任务执行失败: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
         except Exception as e:
             error_msg = str(e)
             if "Connection" in error_msg or "Failed to connect" in error_msg:
@@ -75,16 +88,31 @@ class ModbusAICmd:
                 raise ConnectionError(f"Modbus连接失败。请先建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
             raise
 
-    def execute_action(self, action_id: int, param1: int, param2: int):
-        """执行指定动作"""
-        logger.info(f"执行动作 {action_id}, 参数1: {param1}, 参数2: {param2}")
+    def execute_action(self, action_id: int, param1: int, param2: int, timeout: int = 60):
+        """执行指定动作
+        
+        Args:
+            action_id: 动作编号
+            param1: 参数1
+            param2: 参数2
+            timeout: 超时时间（秒），默认60秒
+        """
+        logger.info(f"执行动作 {action_id}, 参数1: {param1}, 参数2: {param2}，超时时间: {timeout}秒")
         try:
             self.increment_no += 1
             self.mb_server.start_action_task_no(
-                action_id, param1, param2, self.increment_no)  # 等待5秒，动作任务编号为1
-            self.mb_server.wait_action_task_finish(self.increment_no)
+                action_id, param1, param2, self.increment_no)
+            self.mb_server.wait_action_task_finish(self.increment_no, timeout=timeout)
             logger.info("动作执行完成")
             return "执行成功"
+        except TimeoutError as e:
+            error_msg = f"动作任务超时: 动作{action_id}({param1},{param2})，已等待{timeout}秒。可能原因：动作执行异常或硬件故障。"
+            logger.error(f"❌ {error_msg}")
+            raise TimeoutError(error_msg)
+        except RuntimeError as e:
+            error_msg = f"动作任务执行失败: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
         except Exception as e:
             error_msg = str(e)
             if "Connection" in error_msg or "Failed to connect" in error_msg:

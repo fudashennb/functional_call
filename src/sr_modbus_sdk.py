@@ -53,41 +53,121 @@ class SRModbusSdk:
             logger.error(f"❌ Modbus RTU连接失败: {port}, 波特率: {baudrate}")
             return
 
-    def wait_movement_task_finish(self, no=0):
+    def wait_movement_task_finish(self, no=0, timeout=120):
         """
         阻塞等待任务结束，适用于站点移动、位置移动
         :param no: 任务编号
+        :param timeout: 超时时间（秒），默认120秒
         :return: [移动任务结果, 移动任务结果值]
+        :raises TimeoutError: 任务超时
+        :raises RuntimeError: 任务错误或失败
         """
-        for i in range(9999):
+        start_time = time.time()
+        i = 0
+        
+        while True:
+            # 检查超时
+            elapsed = int(time.time() - start_time)
+            if elapsed >= timeout:
+                logger.error(f"❌ 移动任务超时 - 任务编号: {no}, 已等待: {elapsed}s")
+                # 尝试取消任务
+                try:
+                    self.cancel_task()
+                    logger.warning("⚠️ 已尝试取消超时任务")
+                except Exception as e:
+                    logger.error(f"❌ 取消任务失败: {e}")
+                raise TimeoutError(f"移动任务超时: 任务编号{no}, 已等待{timeout}秒")
+            
             decoder = self.read_registers_function(30113, 3)
             cur_move_state = MovementState(decoder.decode_16bit_uint())
             cur_move_no = decoder.decode_32bit_int()
-            logger.info(f"⏳ 等待移动任务完成 {i}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
+            
+            # 每10秒记录一次详细日志，避免日志过多
+            if i % 10 == 0 or cur_move_state != MovementState.MT_RUNNING:
+                logger.info(f"⏳ 等待移动任务完成 {elapsed}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
+            
+            # 检查任务编号是否匹配（如果指定了编号）
+            if no != 0 and cur_move_no != no:
+                # 任务编号不匹配，可能是旧任务或新任务
+                if elapsed > 5:  # 等待5秒后如果还不匹配，记录警告
+                    logger.warning(f"⚠️ 任务编号不匹配 - 期望: {no}, 实际: {cur_move_no}")
+            
+            # 检查暂停状态
+            if cur_move_state == MovementState.MT_PAUSED:
+                logger.warning(f"⚠️ 移动任务已暂停 - 任务编号: {cur_move_no}")
+                # 可以尝试继续任务或取消
+                # self.continue_task()  # 如果需要自动继续
+            
+            # 检查完成状态
+            if cur_move_state == MovementState.MT_FINISHED:
+                if no == 0 or cur_move_no == no:
+                    decoder = self.read_registers_function(30122, 3)
+                    result = MovementResult(decoder.decode_16bit_uint())
+                    result_value = decoder.decode_32bit_int()
+                    
+                    # 检查结果是否为错误
+                    if result == MovementResult.MT_TASK_ERROR:
+                        error_msg = f"移动任务执行错误 - 任务编号: {no}, 错误码: {result_value}"
+                        logger.error(f"❌ {error_msg}")
+                        raise RuntimeError(error_msg)
+                    
+                    logger.info(f"✅ 移动任务完成 - 任务编号: {no if no != 0 else cur_move_no}, 结果: {result}, 耗时: {elapsed}s")
+                    return [result, result_value]
+            
             time.sleep(1)
-            if cur_move_state == MovementState.MT_FINISHED and cur_move_no == no:
-                decoder = self.read_registers_function(30122, 3)
-                logger.info(f"✅ 移动任务完成 - 任务编号: {no}")
-                return [MovementResult(decoder.decode_16bit_uint()), decoder.decode_32bit_int()]
+            i += 1
 
-    def wait_action_task_finish(self, no=0):
+    def wait_action_task_finish(self, no=0, timeout=60):
         """
         阻塞等待任务结束，适用于动作任务
         :param no: 任务编号, 编号为0时会等待当前任务ID
+        :param timeout: 超时时间（秒），默认60秒
         :return: [动作任务结果, 动作任务结果值]
+        :raises TimeoutError: 任务超时
+        :raises RuntimeError: 任务错误或失败
         """
-        for i in range(9999):
+        start_time = time.time()
+        i = 0
+        
+        while True:
+            # 检查超时
+            elapsed = int(time.time() - start_time)
+            if elapsed >= timeout:
+                logger.error(f"❌ 动作任务超时 - 任务编号: {no}, 已等待: {elapsed}s")
+                raise TimeoutError(f"动作任务超时: 任务编号{no}, 已等待{timeout}秒")
+            
             decoder = self.read_registers_function(30129, 3)
             cur_action_state = ActionState(decoder.decode_16bit_uint())
             cur_action_no = decoder.decode_32bit_int()
-            logger.info(f"⏳ 等待动作任务完成 {i}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
-            time.sleep(1)
+            
+            # 每10秒记录一次详细日志，避免日志过多
+            if i % 10 == 0 or cur_action_state != ActionState.AT_RUNNING:
+                logger.info(f"⏳ 等待动作任务完成 {elapsed}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
+            
+            # 检查暂停状态
+            if cur_action_state == ActionState.AT_PAUSED:
+                logger.warning(f"⚠️ 动作任务已暂停 - 任务编号: {cur_action_no}")
+            
             if cur_action_state == ActionState.AT_FINISHED:
                 if no != 0 and cur_action_no != no:
+                    time.sleep(1)
+                    i += 1
                     continue
                 decoder = self.read_registers_function(30138, 3)
-                logger.info(f"✅ 动作任务完成 - 任务编号: {no if no != 0 else cur_action_no}")
-                return [ActionResult(decoder.decode_16bit_uint()), decoder.decode_32bit_int()]
+                result = ActionResult(decoder.decode_16bit_uint())
+                result_value = decoder.decode_32bit_int()
+                
+                # 检查结果是否为错误
+                if result == ActionResult.AT_TASK_ERROR:
+                    error_msg = f"动作任务执行错误 - 任务编号: {no}, 错误码: {result_value}"
+                    logger.error(f"❌ {error_msg}")
+                    raise RuntimeError(error_msg)
+                
+                logger.info(f"✅ 动作任务完成 - 任务编号: {no if no != 0 else cur_action_no}, 结果: {result}, 耗时: {elapsed}s")
+                return [result, result_value]
+            
+            time.sleep(1)
+            i += 1
 
     def wait_locate_task_finish(self):
         """
