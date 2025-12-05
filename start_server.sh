@@ -85,7 +85,19 @@ main() {
     
     # 启动服务器
     echo -e "${GREEN}🎯 启动Gemini服务器...${NC}"
-    conda run -n text_to_speech python3 agent/gemini_server.py
+    echo ""
+    
+    # 获取conda环境的Python路径并直接运行，确保日志实时显示
+    CONDA_ENV_PATH=$(conda env list | grep "^text_to_speech" | awk '{print $NF}' | head -1)
+    
+    if [ -z "$CONDA_ENV_PATH" ] || [ ! -f "$CONDA_ENV_PATH/bin/python3" ]; then
+        echo -e "${RED}❌ 无法找到conda环境的Python解释器${NC}"
+        exit 1
+    fi
+    
+    # 设置环境变量禁用Python输出缓冲，确保日志实时显示
+    export PYTHONUNBUFFERED=1
+    "$CONDA_ENV_PATH/bin/python3" -u agent/gemini_server.py
 }
 
 main "$@"
