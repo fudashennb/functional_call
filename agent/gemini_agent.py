@@ -232,7 +232,14 @@ class GeminiAgent:
             logger.info(f"发送消息给AI: {message}")
             response = self.chat.send_message(message)
             
-            if response.function_calls:
+            # 循环处理所有函数调用，直到AI不再返回函数调用
+            max_iterations = 10  # 防止无限循环
+            iteration = 0
+            
+            while response.function_calls and iteration < max_iterations:
+                iteration += 1
+                logger.debug(f"处理函数调用链 - 第 {iteration} 轮")
+                
                 for fn in response.function_calls:
                     try:
                         # 构建函数参数
@@ -262,6 +269,7 @@ class GeminiAgent:
                                 del os.environ[var]
                         try:
                             response = self.chat.send_message(result)
+                            logger.debug(f"AI响应包含 {len(response.function_calls) if response.function_calls else 0} 个函数调用")
                         finally:
                             # 恢复代理设置
                             for var, value in _original_proxies_func.items():
@@ -271,6 +279,14 @@ class GeminiAgent:
                         error_msg = f"执行函数 {fn.name} 时出错: {str(e)}"
                         logger.error(error_msg, exc_info=True)
                         return f"执行出错: {error_msg},请重新执行"
+                
+                # 如果还有函数调用，继续循环；否则退出
+                if not response.function_calls:
+                    logger.debug("所有函数调用已处理完毕")
+                    break
+            
+            if iteration >= max_iterations:
+                logger.warning(f"⚠️ 达到最大迭代次数 ({max_iterations})，可能存在循环调用")
             
             return response.text
             
