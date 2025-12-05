@@ -60,22 +60,38 @@ class ModbusAICmd:
     def mv_to_station(self, station_no: int):
         """移动到指定站点"""
         logger.info(f"开始移动到站点 {station_no}")
-        self.increment_no += 1
-        logger.debug(f"更新increment_no: {self.increment_no}")
-        self.mb_server.move_to_station_no(station_no, self.increment_no)
-        self.mb_server.wait_movement_task_finish(self.increment_no)
-        logger.info("移动任务执行完成")
-        return "执行成功"
+        try:
+            self.increment_no += 1
+            logger.debug(f"更新increment_no: {self.increment_no}")
+            self.mb_server.move_to_station_no(station_no, self.increment_no)
+            self.mb_server.wait_movement_task_finish(self.increment_no)
+            logger.info("移动任务执行完成")
+            return "执行成功"
+        except Exception as e:
+            error_msg = str(e)
+            if "Connection" in error_msg or "Failed to connect" in error_msg:
+                logger.error(f"❌ Modbus连接失败: {error_msg}")
+                logger.error("💡 提示: 请确保已建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+                raise ConnectionError(f"Modbus连接失败。请先建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+            raise
 
     def execute_action(self, action_id: int, param1: int, param2: int):
         """执行指定动作"""
         logger.info(f"执行动作 {action_id}, 参数1: {param1}, 参数2: {param2}")
-        self.increment_no += 1
-        self.mb_server.start_action_task_no(
-            action_id, param1, param2, self.increment_no)  # 等待5秒，动作任务编号为1
-        self.mb_server.wait_action_task_finish(self.increment_no)
-        logger.info("动作执行完成")
-        return "执行成功"
+        try:
+            self.increment_no += 1
+            self.mb_server.start_action_task_no(
+                action_id, param1, param2, self.increment_no)  # 等待5秒，动作任务编号为1
+            self.mb_server.wait_action_task_finish(self.increment_no)
+            logger.info("动作执行完成")
+            return "执行成功"
+        except Exception as e:
+            error_msg = str(e)
+            if "Connection" in error_msg or "Failed to connect" in error_msg:
+                logger.error(f"❌ Modbus连接失败: {error_msg}")
+                logger.error("💡 提示: 请确保已建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+                raise ConnectionError(f"Modbus连接失败。请先建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+            raise
 
     def execute_method(self, method_name: str):
         """执行指定方法"""
