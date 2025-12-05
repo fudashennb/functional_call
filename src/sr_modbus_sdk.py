@@ -82,9 +82,8 @@ class SRModbusSdk:
             cur_move_state = MovementState(decoder.decode_16bit_uint())
             cur_move_no = decoder.decode_32bit_int()
             
-            # 每10秒记录一次详细日志，避免日志过多
-            if i % 10 == 0 or cur_move_state != MovementState.MT_RUNNING:
-                logger.info(f"⏳ 等待移动任务完成 {elapsed}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
+            # 每秒记录日志，便于实时监控任务状态
+            logger.info(f"⏳ 等待移动任务完成 {elapsed}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
             
             # 检查任务编号是否匹配（如果指定了编号）
             if no != 0 and cur_move_no != no:
@@ -140,9 +139,8 @@ class SRModbusSdk:
             cur_action_state = ActionState(decoder.decode_16bit_uint())
             cur_action_no = decoder.decode_32bit_int()
             
-            # 每10秒记录一次详细日志，避免日志过多
-            if i % 10 == 0 or cur_action_state != ActionState.AT_RUNNING:
-                logger.info(f"⏳ 等待动作任务完成 {elapsed}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
+            # 每秒记录日志，便于实时监控任务状态
+            logger.info(f"⏳ 等待动作任务完成 {elapsed}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
             
             # 检查暂停状态
             if cur_action_state == ActionState.AT_PAUSED:
