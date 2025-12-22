@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 class SRModbusSdk:
     def __init__(self):
         self._client = None
+        self._ip = None
+        self._port = None
 
     def connect_tcp(self, ip, port=502):
         """
@@ -28,6 +30,8 @@ class SRModbusSdk:
         :param port: 车辆端口号
         :return:
         """
+        self._ip = ip
+        self._port = port
         self._client = ModbusTcpClient(host=ip, port=port)
         ret = self._client.connect()
         if ret:
@@ -35,6 +39,49 @@ class SRModbusSdk:
         else:
             logger.error(f"❌ Modbus TCP连接失败: {ip}:{port}")
             return
+    
+    def _check_and_reconnect(self, max_retries=3):
+        """
+        检查连接状态，如果断开则尝试重连
+        :param max_retries: 最大重试次数
+        :return: True if connected, False otherwise
+        """
+        if self._client is None:
+            logger.error("❌ Modbus客户端未初始化")
+            return False
+        
+        # 检查连接状态
+        if hasattr(self._client, 'is_socket_open') and self._client.is_socket_open():
+            return True
+        
+        # 连接已断开，尝试重连
+        if self._ip is None or self._port is None:
+            logger.error("❌ 无法重连：未保存连接信息")
+            return False
+        
+        logger.warning(f"⚠️ Modbus连接已断开，尝试重连... ({self._ip}:{self._port})")
+        for i in range(max_retries):
+            try:
+                # 关闭旧连接
+                if hasattr(self._client, 'close'):
+                    self._client.close()
+                
+                # 创建新连接
+                self._client = ModbusTcpClient(host=self._ip, port=self._port)
+                ret = self._client.connect()
+                
+                if ret:
+                    logger.info(f"✅ Modbus重连成功 ({i+1}/{max_retries})")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Modbus重连失败 ({i+1}/{max_retries})")
+                    time.sleep(1)  # 等待1秒后重试
+            except Exception as e:
+                logger.warning(f"⚠️ Modbus重连异常 ({i+1}/{max_retries}): {e}")
+                time.sleep(1)
+        
+        logger.error(f"❌ Modbus重连失败，已尝试{max_retries}次")
+        return False
 
     def connect_rtu(self, port, baudrate=115200, parity="N"):
         """
@@ -64,6 +111,9 @@ class SRModbusSdk:
         """
         start_time = time.time()
         i = 0
+        consecutive_errors = 0  # 连续错误计数
+        max_consecutive_errors = 10  # 最大连续错误次数（10秒）
+        last_success_time = start_time
         
         while True:
             # 检查超时
@@ -78,40 +128,62 @@ class SRModbusSdk:
                     logger.error(f"❌ 取消任务失败: {e}")
                 raise TimeoutError(f"移动任务超时: 任务编号{no}, 已等待{timeout}秒")
             
-            decoder = self.read_registers_function(30113, 3)
-            cur_move_state = MovementState(decoder.decode_16bit_uint())
-            cur_move_no = decoder.decode_32bit_int()
-            
-            # 每秒记录日志，便于实时监控任务状态
-            logger.info(f"⏳ 等待移动任务完成 {elapsed}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
-            
-            # 检查任务编号是否匹配（如果指定了编号）
-            if no != 0 and cur_move_no != no:
-                # 任务编号不匹配，可能是旧任务或新任务
-                if elapsed > 5:  # 等待5秒后如果还不匹配，记录警告
-                    logger.warning(f"⚠️ 任务编号不匹配 - 期望: {no}, 实际: {cur_move_no}")
-            
-            # 检查暂停状态
-            if cur_move_state == MovementState.MT_PAUSED:
-                logger.warning(f"⚠️ 移动任务已暂停 - 任务编号: {cur_move_no}")
-                # 可以尝试继续任务或取消
-                # self.continue_task()  # 如果需要自动继续
-            
-            # 检查完成状态
-            if cur_move_state == MovementState.MT_FINISHED:
-                if no == 0 or cur_move_no == no:
-                    decoder = self.read_registers_function(30122, 3)
-                    result = MovementResult(decoder.decode_16bit_uint())
-                    result_value = decoder.decode_32bit_int()
+            try:
+                decoder = self.read_registers_function(30113, 3)
+                cur_move_state = MovementState(decoder.decode_16bit_uint())
+                cur_move_no = decoder.decode_32bit_int()
+                
+                # 读取成功，重置错误计数
+                consecutive_errors = 0
+                last_success_time = time.time()
+                
+                # 每秒记录日志，便于实时监控任务状态
+                logger.info(f"⏳ 等待移动任务完成 {elapsed}s - 状态: {cur_move_state}, 任务编号: {cur_move_no}")
+                
+                # 检查任务编号是否匹配（如果指定了编号）
+                if no != 0 and cur_move_no != no:
+                    # 任务编号不匹配，可能是旧任务或新任务
+                    if elapsed > 5:  # 等待5秒后如果还不匹配，记录警告
+                        logger.warning(f"⚠️ 任务编号不匹配 - 期望: {no}, 实际: {cur_move_no}")
+                
+                # 检查暂停状态
+                if cur_move_state == MovementState.MT_PAUSED:
+                    logger.warning(f"⚠️ 移动任务已暂停 - 任务编号: {cur_move_no}")
+                    # 可以尝试继续任务或取消
+                    # self.continue_task()  # 如果需要自动继续
+                
+                # 检查完成状态
+                if cur_move_state == MovementState.MT_FINISHED:
+                    if no == 0 or cur_move_no == no:
+                        decoder = self.read_registers_function(30122, 3)
+                        result = MovementResult(decoder.decode_16bit_uint())
+                        result_value = decoder.decode_32bit_int()
+                        
+                        # 检查结果是否为错误
+                        if result == MovementResult.MT_TASK_ERROR:
+                            error_msg = f"移动任务执行错误 - 任务编号: {no}, 错误码: {result_value}"
+                            logger.error(f"❌ {error_msg}")
+                            raise RuntimeError(error_msg)
+                        
+                        logger.info(f"✅ 移动任务完成 - 任务编号: {no if no != 0 else cur_move_no}, 结果: {result}, 耗时: {elapsed}s")
+                        return [result, result_value]
                     
-                    # 检查结果是否为错误
-                    if result == MovementResult.MT_TASK_ERROR:
-                        error_msg = f"移动任务执行错误 - 任务编号: {no}, 错误码: {result_value}"
-                        logger.error(f"❌ {error_msg}")
-                        raise RuntimeError(error_msg)
-                    
-                    logger.info(f"✅ 移动任务完成 - 任务编号: {no if no != 0 else cur_move_no}, 结果: {result}, 耗时: {elapsed}s")
-                    return [result, result_value]
+            except ConnectionError as e:
+                consecutive_errors += 1
+                error_duration = int(time.time() - last_success_time)
+                
+                # 如果连续错误超过阈值，认为连接长时间中断
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"❌ 连接长时间中断 ({error_duration}s)，已连续失败{consecutive_errors}次")
+                    raise ConnectionError(
+                        f"Modbus连接长时间中断: 任务编号{no}可能仍在执行，但无法继续监控。"
+                        f"请检查网络连接和SSH隧道。错误: {e}"
+                    )
+                
+                # 记录警告，但继续尝试
+                logger.warning(f"⚠️ 读取失败 ({consecutive_errors}/{max_consecutive_errors}): {e}，继续尝试...")
+                time.sleep(1)  # 等待1秒后重试
+                continue
             
             time.sleep(1)
             i += 1
@@ -127,6 +199,9 @@ class SRModbusSdk:
         """
         start_time = time.time()
         i = 0
+        consecutive_errors = 0  # 连续错误计数
+        max_consecutive_errors = 10  # 最大连续错误次数（10秒）
+        last_success_time = start_time
         
         while True:
             # 检查超时
@@ -135,34 +210,56 @@ class SRModbusSdk:
                 logger.error(f"❌ 动作任务超时 - 任务编号: {no}, 已等待: {elapsed}s")
                 raise TimeoutError(f"动作任务超时: 任务编号{no}, 已等待{timeout}秒")
             
-            decoder = self.read_registers_function(30129, 3)
-            cur_action_state = ActionState(decoder.decode_16bit_uint())
-            cur_action_no = decoder.decode_32bit_int()
-            
-            # 每秒记录日志，便于实时监控任务状态
-            logger.info(f"⏳ 等待动作任务完成 {elapsed}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
-            
-            # 检查暂停状态
-            if cur_action_state == ActionState.AT_PAUSED:
-                logger.warning(f"⚠️ 动作任务已暂停 - 任务编号: {cur_action_no}")
-            
-            if cur_action_state == ActionState.AT_FINISHED:
-                if no != 0 and cur_action_no != no:
-                    time.sleep(1)
-                    i += 1
-                    continue
-                decoder = self.read_registers_function(30138, 3)
-                result = ActionResult(decoder.decode_16bit_uint())
-                result_value = decoder.decode_32bit_int()
+            try:
+                decoder = self.read_registers_function(30129, 3)
+                cur_action_state = ActionState(decoder.decode_16bit_uint())
+                cur_action_no = decoder.decode_32bit_int()
                 
-                # 检查结果是否为错误
-                if result == ActionResult.AT_TASK_ERROR:
-                    error_msg = f"动作任务执行错误 - 任务编号: {no}, 错误码: {result_value}"
-                    logger.error(f"❌ {error_msg}")
-                    raise RuntimeError(error_msg)
+                # 读取成功，重置错误计数
+                consecutive_errors = 0
+                last_success_time = time.time()
                 
-                logger.info(f"✅ 动作任务完成 - 任务编号: {no if no != 0 else cur_action_no}, 结果: {result}, 耗时: {elapsed}s")
-                return [result, result_value]
+                # 每秒记录日志，便于实时监控任务状态
+                logger.info(f"⏳ 等待动作任务完成 {elapsed}s - 状态: {cur_action_state}, 任务编号: {cur_action_no}")
+                
+                # 检查暂停状态
+                if cur_action_state == ActionState.AT_PAUSED:
+                    logger.warning(f"⚠️ 动作任务已暂停 - 任务编号: {cur_action_no}")
+                
+                if cur_action_state == ActionState.AT_FINISHED:
+                    if no != 0 and cur_action_no != no:
+                        time.sleep(1)
+                        i += 1
+                        continue
+                    decoder = self.read_registers_function(30138, 3)
+                    result = ActionResult(decoder.decode_16bit_uint())
+                    result_value = decoder.decode_32bit_int()
+                    
+                    # 检查结果是否为错误
+                    if result == ActionResult.AT_TASK_ERROR:
+                        error_msg = f"动作任务执行错误 - 任务编号: {no}, 错误码: {result_value}"
+                        logger.error(f"❌ {error_msg}")
+                        raise RuntimeError(error_msg)
+                    
+                    logger.info(f"✅ 动作任务完成 - 任务编号: {no if no != 0 else cur_action_no}, 结果: {result}, 耗时: {elapsed}s")
+                    return [result, result_value]
+                
+            except ConnectionError as e:
+                consecutive_errors += 1
+                error_duration = int(time.time() - last_success_time)
+                
+                # 如果连续错误超过阈值，认为连接长时间中断
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"❌ 连接长时间中断 ({error_duration}s)，已连续失败{consecutive_errors}次")
+                    raise ConnectionError(
+                        f"Modbus连接长时间中断: 任务编号{no}可能仍在执行，但无法继续监控。"
+                        f"请检查网络连接和SSH隧道。错误: {e}"
+                    )
+                
+                # 记录警告，但继续尝试
+                logger.warning(f"⚠️ 读取失败 ({consecutive_errors}/{max_consecutive_errors}): {e}，继续尝试...")
+                time.sleep(1)  # 等待1秒后重试
+                continue
             
             time.sleep(1)
             i += 1
@@ -434,39 +531,141 @@ class SRModbusSdk:
         """是否处于调度模式"""
         return self.read_discrete_function(10051)
 
-    def read_registers_function(self, address, register_num):
+    def read_registers_function(self, address, register_num, retry_count=3):
         """
-        读取输入寄存器功能
+        读取输入寄存器功能（带重试和自动重连）
         :param address: 寄存器地址
         :param register_num: 寄存器数量
+        :param retry_count: 重试次数
         :return:
+        :raises ConnectionError: 连接失败或读取失败
         """
-        ret = self._client.read_input_registers(address, count=register_num, slave=17)
-        # 检查是否为异常响应
-        if hasattr(ret, 'isError') and ret.isError():
-            raise ConnectionError(f"Modbus读取失败: 地址{address}, 数量{register_num}, 错误: {ret}")
-        if not hasattr(ret, 'registers'):
-            raise ConnectionError(f"Modbus读取失败: 未返回有效数据, 响应类型: {type(ret).__name__}")
-        decoder = BinaryPayloadDecoder.fromRegisters(ret.registers, byteorder=Endian.Big,
-                                                     wordorder=Endian.Big)
-        return decoder
+        last_error = None
+        
+        for attempt in range(retry_count):
+            try:
+                # 检查并恢复连接
+                if not self._check_and_reconnect():
+                    if attempt < retry_count - 1:
+                        logger.debug(f"连接检查失败，等待重试 ({attempt+1}/{retry_count})")
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        raise ConnectionError(f"Modbus连接失败，无法读取寄存器: 地址{address}")
+                
+                ret = self._client.read_input_registers(address, count=register_num, slave=17)
+                
+                # 检查是否为异常响应
+                if hasattr(ret, 'isError') and ret.isError():
+                    error_msg = str(ret)
+                    # 检查是否是连接错误
+                    if "Incomplete message" in error_msg or "0 received" in error_msg:
+                        logger.warning(f"⚠️ 检测到连接中断: {error_msg}")
+                        if attempt < retry_count - 1:
+                            # 强制重连
+                            if hasattr(self._client, 'close'):
+                                self._client.close()
+                            time.sleep(0.5)
+                            continue
+                    raise ConnectionError(f"Modbus读取失败: 地址{address}, 数量{register_num}, 错误: {ret}")
+                
+                if not hasattr(ret, 'registers'):
+                    raise ConnectionError(f"Modbus读取失败: 未返回有效数据, 响应类型: {type(ret).__name__}")
+                
+                decoder = BinaryPayloadDecoder.fromRegisters(ret.registers, byteorder=Endian.Big,
+                                                             wordorder=Endian.Big)
+                return decoder
+                
+            except ConnectionError as e:
+                last_error = e
+                if attempt < retry_count - 1:
+                    logger.debug(f"读取失败，重试 ({attempt+1}/{retry_count}): {e}")
+                    time.sleep(0.5)
+                else:
+                    raise
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                # 检查是否是网络相关错误
+                if "Incomplete message" in error_msg or "0 received" in error_msg or "Connection" in error_msg:
+                    if attempt < retry_count - 1:
+                        logger.warning(f"⚠️ 网络错误，尝试重连 ({attempt+1}/{retry_count}): {e}")
+                        if hasattr(self._client, 'close'):
+                            self._client.close()
+                        time.sleep(0.5)
+                        continue
+                raise ConnectionError(f"Modbus读取异常: 地址{address}, 错误: {e}")
+        
+        # 所有重试都失败
+        raise ConnectionError(f"Modbus读取失败，已重试{retry_count}次: {last_error}")
 
-    def read_holding_registers_function(self, address, register_num):
+    def read_holding_registers_function(self, address, register_num, retry_count=3):
         """
-        读取保持寄存器功能
+        读取保持寄存器功能（带重试和自动重连）
         :param address: 寄存器地址
-        :param count=register_num: 寄存器数量
+        :param register_num: 寄存器数量
+        :param retry_count: 重试次数
         :return:
+        :raises ConnectionError: 连接失败或读取失败
         """
-        ret = self._client.read_holding_registers(address, count=register_num, slave=17)
-        # 检查是否为异常响应
-        if hasattr(ret, 'isError') and ret.isError():
-            raise ConnectionError(f"Modbus读取失败: 地址{address}, 数量{register_num}, 错误: {ret}")
-        if not hasattr(ret, 'registers'):
-            raise ConnectionError(f"Modbus读取失败: 未返回有效数据, 响应类型: {type(ret).__name__}")
-        decoder = BinaryPayloadDecoder.fromRegisters(ret.registers, byteorder=Endian.Big,
-                                                     wordorder=Endian.Big)
-        return decoder
+        last_error = None
+        
+        for attempt in range(retry_count):
+            try:
+                # 检查并恢复连接
+                if not self._check_and_reconnect():
+                    if attempt < retry_count - 1:
+                        logger.debug(f"连接检查失败，等待重试 ({attempt+1}/{retry_count})")
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        raise ConnectionError(f"Modbus连接失败，无法读取寄存器: 地址{address}")
+                
+                ret = self._client.read_holding_registers(address, count=register_num, slave=17)
+                
+                # 检查是否为异常响应
+                if hasattr(ret, 'isError') and ret.isError():
+                    error_msg = str(ret)
+                    # 检查是否是连接错误
+                    if "Incomplete message" in error_msg or "0 received" in error_msg:
+                        logger.warning(f"⚠️ 检测到连接中断: {error_msg}")
+                        if attempt < retry_count - 1:
+                            # 强制重连
+                            if hasattr(self._client, 'close'):
+                                self._client.close()
+                            time.sleep(0.5)
+                            continue
+                    raise ConnectionError(f"Modbus读取失败: 地址{address}, 数量{register_num}, 错误: {ret}")
+                
+                if not hasattr(ret, 'registers'):
+                    raise ConnectionError(f"Modbus读取失败: 未返回有效数据, 响应类型: {type(ret).__name__}")
+                
+                decoder = BinaryPayloadDecoder.fromRegisters(ret.registers, byteorder=Endian.Big,
+                                                             wordorder=Endian.Big)
+                return decoder
+                
+            except ConnectionError as e:
+                last_error = e
+                if attempt < retry_count - 1:
+                    logger.debug(f"读取失败，重试 ({attempt+1}/{retry_count}): {e}")
+                    time.sleep(0.5)
+                else:
+                    raise
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                # 检查是否是网络相关错误
+                if "Incomplete message" in error_msg or "0 received" in error_msg or "Connection" in error_msg:
+                    if attempt < retry_count - 1:
+                        logger.warning(f"⚠️ 网络错误，尝试重连 ({attempt+1}/{retry_count}): {e}")
+                        if hasattr(self._client, 'close'):
+                            self._client.close()
+                        time.sleep(0.5)
+                        continue
+                raise ConnectionError(f"Modbus读取异常: 地址{address}, 错误: {e}")
+        
+        # 所有重试都失败
+        raise ConnectionError(f"Modbus读取失败，已重试{retry_count}次: {last_error}")
     
     def get_cur_system_state(self) -> SystemState:
         """系统状态"""

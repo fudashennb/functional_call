@@ -95,6 +95,10 @@ class GeminiAgent:
             callable=self.modbus_ai_cmd.terminate_chat, client=self.client)
         get_battery_info = types.FunctionDeclaration.from_callable(
             callable=self.modbus_ai_cmd.get_battery_info, client=self.client)
+        start_charge = types.FunctionDeclaration.from_callable(
+            callable=self.modbus_ai_cmd.start_charge, client=self.client)
+        stop_charge = types.FunctionDeclaration.from_callable(
+            callable=self.modbus_ai_cmd.stop_charge, client=self.client)
 
         # AGV基本信息相关函数声明
         get_agv_access_time = types.FunctionDeclaration.from_callable(
@@ -157,6 +161,8 @@ class GeminiAgent:
                 types.Tool(function_declarations=[mv_to_station]),
                 types.Tool(function_declarations=[execute_action]),
                 types.Tool(function_declarations=[get_battery_info]),
+                types.Tool(function_declarations=[start_charge]),
+                types.Tool(function_declarations=[stop_charge]),
                 types.Tool(function_declarations=[terminate_chat]),
                 
                 # AGV基本信息

@@ -107,6 +107,25 @@ class ModbusAICmd:
             error_msg = f"移动任务超时: 站点{station_no}，已等待{timeout}秒。可能原因：机器人遇到障碍、路径阻塞或硬件故障。"
             logger.error(f"❌ {error_msg}")
             raise TimeoutError(error_msg)
+        except ConnectionError as e:
+            error_msg = str(e)
+            # 区分连接错误类型
+            if "长时间中断" in error_msg:
+                # 连接长时间中断，任务可能仍在执行
+                logger.error(f"❌ {error_msg}")
+                logger.error("💡 提示: 任务可能仍在执行，请检查机器人状态或稍后查询任务状态")
+                raise ConnectionError(
+                    f"网络连接中断: 任务编号{task_no}可能仍在执行，但无法继续监控。"
+                    f"请检查SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218"
+                )
+            elif "连接失败" in error_msg or "Failed to connect" in error_msg:
+                logger.error(f"❌ Modbus连接失败: {error_msg}")
+                logger.error("💡 提示: 请确保已建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+                raise ConnectionError(f"Modbus连接失败。请先建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+            else:
+                # 其他连接错误
+                logger.error(f"❌ Modbus连接错误: {error_msg}")
+                raise ConnectionError(f"Modbus连接错误: {error_msg}")
         except RuntimeError as e:
             error_msg = f"移动任务执行失败: {str(e)}"
             logger.error(f"❌ {error_msg}")
@@ -180,6 +199,131 @@ class ModbusAICmd:
                 "nominal_capacity": battery_percent.nominal_capacity
             }
         })
+    
+    def start_charge(self) -> str:
+        """启动充电
+        
+        通过写入线圈地址9来启动充电。充电是即时控制命令，不需要等待完成。
+        可以通过get_battery_info()查询电池状态来确认是否正在充电。
+        
+        Returns:
+            str: JSON格式的执行结果
+        """
+        logger.info("🔌 启动充电...")
+        try:
+            # 检查是否已经在充电
+            if self.mb_server.is_charge():
+                logger.info("⚠️ 机器人已经在充电中")
+                return json.dumps({
+                    "status": "already_charging",
+                    "message": "机器人已经在充电中"
+                })
+            
+            # 发送充电命令（写入线圈地址9）
+            logger.info("📤 发送充电命令...")
+            self.mb_server.charge()
+            
+            # 轮询检查充电状态，每秒检查一次，直到成功或超时
+            max_wait_time = 60  # 最大等待时间60秒
+            poll_interval = 1  # 每秒轮询一次
+            start_time = time.time()
+            elapsed = 0
+            
+            logger.info(f"⏳ 开始轮询检查充电状态（最多等待 {max_wait_time} 秒）...")
+            while elapsed < max_wait_time:
+                time.sleep(poll_interval)
+                elapsed = int(time.time() - start_time)
+                
+                # 检查充电状态
+                if self.mb_server.is_charge():
+                    logger.info(f"✅ 充电已成功启动（耗时 {elapsed} 秒）")
+                    return json.dumps({
+                        "status": "success",
+                        "message": f"充电已成功启动（耗时 {elapsed} 秒）"
+                    })
+                
+                # 每5秒记录一次日志
+                if elapsed % 5 == 0:
+                    logger.info(f"⏳ 等待充电启动中... ({elapsed}/{max_wait_time}秒)")
+            
+            # 超时仍未成功
+            logger.warning(f"⚠️ 等待 {max_wait_time} 秒后，充电状态仍未确认")
+            return json.dumps({
+                "status": "sent",
+                "message": f"充电命令已发送，但等待 {max_wait_time} 秒后充电状态仍未确认，请稍后查询电池状态确认"
+            })
+                
+        except ConnectionError as e:
+            error_msg = str(e)
+            logger.error(f"❌ Modbus连接失败: {error_msg}")
+            logger.error("💡 提示: 请确保已建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+            raise ConnectionError(f"Modbus连接失败。请先建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+        except Exception as e:
+            error_msg = f"启动充电失败: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
+
+    def stop_charge(self) -> str:
+        """停止充电
+        
+        通过写入线圈地址10来停止充电。
+        
+        Returns:
+            str: JSON格式的执行结果
+        """
+        logger.info("🔌 停止充电...")
+        try:
+            # 检查是否正在充电
+            if not self.mb_server.is_charge():
+                logger.info("⚠️ 机器人未在充电")
+                return json.dumps({
+                    "status": "not_charging",
+                    "message": "机器人未在充电"
+                })
+            
+            # 发送停止充电命令（写入线圈地址10）
+            logger.info("📤 发送停止充电命令...")
+            self.mb_server.stop_charge()
+            
+            # 轮询检查充电状态，每秒检查一次，直到成功或超时
+            max_wait_time = 60  # 最大等待时间60秒
+            poll_interval = 1  # 每秒轮询一次
+            start_time = time.time()
+            elapsed = 0
+            
+            logger.info(f"⏳ 开始轮询检查充电状态（最多等待 {max_wait_time} 秒）...")
+            while elapsed < max_wait_time:
+                time.sleep(poll_interval)
+                elapsed = int(time.time() - start_time)
+                
+                # 检查充电状态
+                if not self.mb_server.is_charge():
+                    logger.info(f"✅ 充电已成功停止（耗时 {elapsed} 秒）")
+                    return json.dumps({
+                        "status": "success",
+                        "message": f"充电已成功停止（耗时 {elapsed} 秒）"
+                    })
+                
+                # 每5秒记录一次日志
+                if elapsed % 5 == 0:
+                    logger.info(f"⏳ 等待充电停止中... ({elapsed}/{max_wait_time}秒)")
+            
+            # 超时仍未成功
+            logger.warning(f"⚠️ 等待 {max_wait_time} 秒后，充电状态仍未确认")
+            return json.dumps({
+                "status": "sent",
+                "message": f"停止充电命令已发送，但等待 {max_wait_time} 秒后充电状态仍未确认，请稍后查询电池状态确认"
+            })
+                
+        except ConnectionError as e:
+            error_msg = str(e)
+            logger.error(f"❌ Modbus连接失败: {error_msg}")
+            logger.error("💡 提示: 请确保已建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+            raise ConnectionError(f"Modbus连接失败。请先建立SSH隧道: ssh -f -N -L 1502:localhost:502 -p 2222 root@10.10.70.218")
+        except Exception as e:
+            error_msg = f"停止充电失败: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
     
     def terminate_chat(self, terminal_message: str) -> str:
         """终止聊天会话"""
